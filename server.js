@@ -5,6 +5,7 @@ const cors = require('cors');
 const messageRoute = require('./routes/message');
 const ordersRoute = require('./routes/orders');
 const conversationsRoute = require('./routes/conversations');
+const chatRoute = require('./routes/chat');
 const { initDb } = require('./lib/db');
 
 const app = express();
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use('/api/message', messageRoute);
 app.use('/api/orders', ordersRoute);
 app.use('/api/conversations', conversationsRoute);
+app.use('/api/chat', chatRoute);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
