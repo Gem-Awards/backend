@@ -7,6 +7,7 @@ const { generateResponse } = require('../lib/claude');
 const {
   createConversation,
   saveMessage,
+  getConversationStatus,
   getConversationEmail,
   updateConversationEmail,
 } = require('../lib/db');
@@ -31,23 +32,29 @@ const EMAIL_REGEX = /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/;
 // POST /api/message
 // body: { message, orderNumber?, email?, conversationId?, agentAvailable? }
 router.post('/', async (req, res) => {
-  const { message, orderNumber, email, conversationId: incomingId, agentAvailable } = req.body;
+  const { message, orderNumber, email, name, conversationId: incomingId, agentAvailable } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  // Reuse the conversation ID the widget sends back after the first message,
-  // or start a new one if this is the first message of the session.
   const conversationId = incomingId || crypto.randomUUID();
+  const isNewConversation = !incomingId;
 
-  // Figure out the best email we know for this customer: what the widget
-  // sent (e.g. a logged-in account email), one already saved on this
-  // conversation from an earlier message, or one the customer just typed.
   let knownEmail = email || null;
+  let priorStatus = null;
 
   try {
-    await createConversation({ id: conversationId, channel: 'chat', customerEmail: knownEmail });
+    await createConversation({
+      id: conversationId,
+      channel: 'chat',
+      customerEmail: knownEmail,
+      customerName: name || null,
+    });
+
+    if (!isNewConversation) {
+      priorStatus = await getConversationStatus(conversationId);
+    }
 
     if (!knownEmail) {
       knownEmail = await getConversationEmail(conversationId);
@@ -71,7 +78,7 @@ router.post('/', async (req, res) => {
     console.error('Failed to save customer message:', err.message);
   }
 
-  async function respondAndStore(replyText, escalate) {
+  async function respondAndStore(replyText, escalate, conversationStatus) {
     try {
       await saveMessage({
         id: crypto.randomUUID(),
@@ -79,6 +86,7 @@ router.post('/', async (req, res) => {
         sender: 'ai',
         content: replyText,
         escalate,
+        conversationStatus,
       });
     } catch (err) {
       console.error('Failed to save AI reply:', err.message);
@@ -86,27 +94,24 @@ router.post('/', async (req, res) => {
     res.json({ reply: replyText, escalate, conversationId });
   }
 
-  const lower = message.toLowerCase();
-  const shouldEscalate = ESCALATION_TRIGGERS.some((t) => lower.includes(t));
-
-  if (shouldEscalate) {
-    // agentAvailable defaults to true (treat as during-hours) if the widget
-    // didn't send it, so older/unconfigured widgets keep working as before.
+  // Shared escalation logic - used whether triggered by keywords on this
+  // message, or by finishing an "awaiting email" exchange from a prior turn.
+  async function escalate() {
     const isAvailable = agentAvailable !== false;
 
-    // Don't hand off (live or by email) without a way to reach the customer
-    // back - ask for their email first instead of escalating blind.
     if (!knownEmail) {
       return respondAndStore(
         "That sounds like something our team should help with directly. Could you share the best email to reach you at, so they can follow up with you?",
-        true
+        true,
+        'awaiting_email'
       );
     }
 
     if (isAvailable) {
       return respondAndStore(
         "That sounds like something a team member should help with directly. I'm connecting you with a human agent.",
-        true
+        true,
+        'escalated'
       );
     }
 
@@ -118,8 +123,30 @@ router.post('/', async (req, res) => {
 
     return respondAndStore(
       `Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up at ${knownEmail} as soon as we're back.`,
-      true
+      true,
+      'escalated'
     );
+  }
+
+  // If the previous turn asked this customer for their email, this message
+  // is their reply to that - finish escalating regardless of what it says,
+  // rather than treating it as an unrelated new question.
+  if (priorStatus === 'awaiting_email') {
+    if (knownEmail) {
+      return escalate();
+    }
+    return respondAndStore(
+      "I didn't quite catch an email address there - could you type it in so our team can follow up with you?",
+      true,
+      'awaiting_email'
+    );
+  }
+
+  const lower = message.toLowerCase();
+  const shouldEscalate = ESCALATION_TRIGGERS.some((t) => lower.includes(t));
+
+  if (shouldEscalate) {
+    return escalate();
   }
 
   try {
@@ -141,7 +168,8 @@ router.post('/', async (req, res) => {
     console.error('AI reasoning failed:', err.message);
     return respondAndStore(
       "Sorry, I'm having trouble answering right now. Let me connect you with a human agent.",
-      true
+      true,
+      'escalated'
     );
   }
 });
