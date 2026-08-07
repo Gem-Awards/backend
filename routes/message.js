@@ -5,6 +5,7 @@ const { searchKnowledgeBase } = require('../lib/knowledgeBase');
 const { findOrder } = require('../lib/woocommerce');
 const { generateResponse } = require('../lib/claude');
 const { createConversation, saveMessage } = require('../lib/db');
+const { sendEscalationEmail } = require('../lib/email');
 
 // Rough escalation triggers to start with. Replace with a real
 // intent/sentiment classifier once you have real conversation logs to tune
@@ -23,7 +24,7 @@ const ESCALATION_TRIGGERS = [
 // POST /api/message
 // body: { message, orderNumber?, email?, conversationId? }
 router.post('/', async (req, res) => {
-  const { message, orderNumber, email, conversationId: incomingId } = req.body;
+  const { message, orderNumber, email, conversationId: incomingId, agentAvailable } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'message is required' });
@@ -66,8 +67,25 @@ router.post('/', async (req, res) => {
   const shouldEscalate = ESCALATION_TRIGGERS.some((t) => lower.includes(t));
 
   if (shouldEscalate) {
+    // agentAvailable defaults to true (treat as during-hours) if the widget
+    // didn't send it, so older/unconfigured widgets keep working as before.
+    const isAvailable = agentAvailable !== false;
+
+    if (isAvailable) {
+      return respondAndStore(
+        "That sounds like something a team member should help with directly. I'm connecting you with a human agent.",
+        true
+      );
+    }
+
+    try {
+      await sendEscalationEmail({ conversationId, customerEmail: email, message });
+    } catch (err) {
+      console.error('Failed to send escalation email:', err.message);
+    }
+
     return respondAndStore(
-      "That sounds like something a team member should help with directly. I'm connecting you with a human agent.",
+      "Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up as soon as we're back.",
       true
     );
   }
