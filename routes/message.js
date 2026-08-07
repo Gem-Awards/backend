@@ -91,6 +91,7 @@ router.post('/', async (req, res) => {
       sender: 'customer',
       content: message,
       escalate: false,
+      conversationStatus: priorStatus || undefined,
     });
   } catch (err) {
     // Don't let a storage failure block the chat itself - degrade gracefully.
