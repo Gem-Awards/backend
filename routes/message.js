@@ -4,7 +4,12 @@ const router = express.Router();
 const { searchKnowledgeBase } = require('../lib/knowledgeBase');
 const { findOrder } = require('../lib/woocommerce');
 const { generateResponse } = require('../lib/claude');
-const { createConversation, saveMessage } = require('../lib/db');
+const {
+  createConversation,
+  saveMessage,
+  getConversationEmail,
+  updateConversationEmail,
+} = require('../lib/db');
 const { sendEscalationEmail } = require('../lib/email');
 
 // Rough escalation triggers to start with. Replace with a real
@@ -21,8 +26,10 @@ const ESCALATION_TRIGGERS = [
   'complaint',
 ];
 
+const EMAIL_REGEX = /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/;
+
 // POST /api/message
-// body: { message, orderNumber?, email?, conversationId? }
+// body: { message, orderNumber?, email?, conversationId?, agentAvailable? }
 router.post('/', async (req, res) => {
   const { message, orderNumber, email, conversationId: incomingId, agentAvailable } = req.body;
 
@@ -34,8 +41,24 @@ router.post('/', async (req, res) => {
   // or start a new one if this is the first message of the session.
   const conversationId = incomingId || crypto.randomUUID();
 
+  // Figure out the best email we know for this customer: what the widget
+  // sent (e.g. a logged-in account email), one already saved on this
+  // conversation from an earlier message, or one the customer just typed.
+  let knownEmail = email || null;
+
   try {
-    await createConversation({ id: conversationId, channel: 'chat', customerEmail: email });
+    await createConversation({ id: conversationId, channel: 'chat', customerEmail: knownEmail });
+
+    if (!knownEmail) {
+      knownEmail = await getConversationEmail(conversationId);
+    }
+
+    const typedEmailMatch = message.match(EMAIL_REGEX);
+    if (typedEmailMatch && typedEmailMatch[0] !== knownEmail) {
+      knownEmail = typedEmailMatch[0];
+      await updateConversationEmail(conversationId, knownEmail);
+    }
+
     await saveMessage({
       id: crypto.randomUUID(),
       conversationId,
@@ -71,6 +94,15 @@ router.post('/', async (req, res) => {
     // didn't send it, so older/unconfigured widgets keep working as before.
     const isAvailable = agentAvailable !== false;
 
+    // Don't hand off (live or by email) without a way to reach the customer
+    // back - ask for their email first instead of escalating blind.
+    if (!knownEmail) {
+      return respondAndStore(
+        "That sounds like something our team should help with directly. Could you share the best email to reach you at, so they can follow up with you?",
+        true
+      );
+    }
+
     if (isAvailable) {
       return respondAndStore(
         "That sounds like something a team member should help with directly. I'm connecting you with a human agent.",
@@ -79,13 +111,13 @@ router.post('/', async (req, res) => {
     }
 
     try {
-      await sendEscalationEmail({ conversationId, customerEmail: email, message });
+      await sendEscalationEmail({ conversationId, customerEmail: knownEmail, message });
     } catch (err) {
       console.error('Failed to send escalation email:', err.message);
     }
 
     return respondAndStore(
-      "Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up as soon as we're back.",
+      `Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up at ${knownEmail} as soon as we're back.`,
       true
     );
   }
@@ -94,8 +126,8 @@ router.post('/', async (req, res) => {
     const kbContext = searchKnowledgeBase(message);
 
     let orderContext = null;
-    if (orderNumber || email) {
-      orderContext = await findOrder({ orderNumber, email });
+    if (orderNumber || knownEmail) {
+      orderContext = await findOrder({ orderNumber, email: knownEmail });
     }
 
     const reply = await generateResponse({
