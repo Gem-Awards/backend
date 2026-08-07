@@ -8,8 +8,8 @@ const {
   createConversation,
   saveMessage,
   getConversationStatus,
-  getConversationEmail,
-  updateConversationEmail,
+  getConversationContact,
+  updateConversationContact,
 } = require('../lib/db');
 const { sendEscalationEmail } = require('../lib/email');
 
@@ -29,8 +29,27 @@ const ESCALATION_TRIGGERS = [
 
 const EMAIL_REGEX = /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/;
 
+// Pulls an email and, heuristically, a name out of a reply to "what's your
+// name and email?" - not meant to scan arbitrary messages, only used right
+// after we've explicitly asked for this info.
+function parseContactInfo(text) {
+  const emailMatch = text.match(EMAIL_REGEX);
+  const email = emailMatch ? emailMatch[0] : null;
+
+  let namePart = email ? text.replace(email, '') : text;
+  namePart = namePart
+    .replace(/\b(it'?s|i'?m|im|my name is|this is|and my email is|and email is|email is|name is)\b/gi, '')
+    .replace(/[,.:;!\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const name = namePart && namePart.length <= 60 ? namePart : null;
+
+  return { email, name };
+}
+
 // POST /api/message
-// body: { message, orderNumber?, email?, conversationId?, agentAvailable? }
+// body: { message, orderNumber?, email?, name?, conversationId?, agentAvailable? }
 router.post('/', async (req, res) => {
   const { message, orderNumber, email, name, conversationId: incomingId, agentAvailable } = req.body;
 
@@ -42,6 +61,7 @@ router.post('/', async (req, res) => {
   const isNewConversation = !incomingId;
 
   let knownEmail = email || null;
+  let knownName = name || null;
   let priorStatus = null;
 
   try {
@@ -49,21 +69,20 @@ router.post('/', async (req, res) => {
       id: conversationId,
       channel: 'chat',
       customerEmail: knownEmail,
-      customerName: name || null,
+      customerName: knownName,
     });
 
     if (!isNewConversation) {
       priorStatus = await getConversationStatus(conversationId);
-    }
-
-    if (!knownEmail) {
-      knownEmail = await getConversationEmail(conversationId);
+      const contact = await getConversationContact(conversationId);
+      if (!knownEmail) knownEmail = contact.email;
+      if (!knownName) knownName = contact.name;
     }
 
     const typedEmailMatch = message.match(EMAIL_REGEX);
     if (typedEmailMatch && typedEmailMatch[0] !== knownEmail) {
       knownEmail = typedEmailMatch[0];
-      await updateConversationEmail(conversationId, knownEmail);
+      await updateConversationContact(conversationId, { email: knownEmail });
     }
 
     await saveMessage({
@@ -95,16 +114,16 @@ router.post('/', async (req, res) => {
   }
 
   // Shared escalation logic - used whether triggered by keywords on this
-  // message, or by finishing an "awaiting email" exchange from a prior turn.
+  // message, or by finishing an "awaiting contact info" exchange from a
+  // prior turn.
   async function escalate() {
     const isAvailable = agentAvailable !== false;
 
     if (!knownEmail) {
-      return respondAndStore(
-        "That sounds like something our team should help with directly. Could you share the best email to reach you at, so they can follow up with you?",
-        true,
-        'awaiting_email'
-      );
+      const prompt = knownName
+        ? "That sounds like something our team should help with directly. Could you share the best email to reach you at, so they can follow up with you?"
+        : "That sounds like something our team should help with directly. Could you share your name and the best email to reach you at, so they can follow up with you?";
+      return respondAndStore(prompt, true, 'awaiting_email');
     }
 
     if (isAvailable) {
@@ -116,7 +135,12 @@ router.post('/', async (req, res) => {
     }
 
     try {
-      await sendEscalationEmail({ conversationId, customerEmail: knownEmail, message });
+      await sendEscalationEmail({
+        conversationId,
+        customerEmail: knownEmail,
+        customerName: knownName,
+        message,
+      });
     } catch (err) {
       console.error('Failed to send escalation email:', err.message);
     }
@@ -128,10 +152,22 @@ router.post('/', async (req, res) => {
     );
   }
 
-  // If the previous turn asked this customer for their email, this message
-  // is their reply to that - finish escalating regardless of what it says,
-  // rather than treating it as an unrelated new question.
+  // If the previous turn asked this customer for their name/email, this
+  // message is their reply to that - parse what we can out of it and
+  // finish escalating, rather than treating it as an unrelated question.
   if (priorStatus === 'awaiting_email') {
+    const parsed = parseContactInfo(message);
+    if (parsed.email) knownEmail = parsed.email;
+    if (parsed.name && !knownName) knownName = parsed.name;
+
+    if (knownEmail || knownName) {
+      try {
+        await updateConversationContact(conversationId, { email: knownEmail, name: knownName });
+      } catch (err) {
+        console.error('Failed to save contact info:', err.message);
+      }
+    }
+
     if (knownEmail) {
       return escalate();
     }
