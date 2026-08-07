@@ -8,6 +8,7 @@ const {
   updateConversationStatus,
   markConversationViewed,
   countUnreadConversations,
+  bulkCloseConversations,
 } = require('../lib/db');
 
 // Simple shared-secret protection. This data can include customer emails and
@@ -119,6 +120,24 @@ router.patch('/:id/status', async (req, res) => {
   } catch (err) {
     console.error('Failed to update conversation status:', err.message);
     res.status(500).json({ error: 'Failed to update status.' });
+  }
+});
+
+// POST /api/conversations/bulk-close
+// body: { ids: [...] }
+router.post('/bulk-close', async (req, res) => {
+  const { ids } = req.body;
+
+  if (!Array.isArray(ids) || !ids.length) {
+    return res.status(400).json({ error: 'ids must be a non-empty array.' });
+  }
+
+  try {
+    const count = await bulkCloseConversations(ids);
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('Failed to bulk-close conversations:', err.message);
+    res.status(500).json({ error: 'Failed to bulk-close conversations.' });
   }
 });
 
