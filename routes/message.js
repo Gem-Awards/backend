@@ -142,6 +142,15 @@ router.post('/', async (req, res) => {
     );
   }
 
+  // A human is already handling this conversation (either the "connecting
+  // you now" live handoff, or an agent has already replied) - just save
+  // this message for them rather than routing it back through the AI. The
+  // customer message was already saved above, so there's nothing more to
+  // do here except tell the widget not to show an AI bubble.
+  if (priorStatus === 'escalated') {
+    return res.json({ reply: null, escalate: true, conversationId });
+  }
+
   const lower = message.toLowerCase();
   const shouldEscalate = ESCALATION_TRIGGERS.some((t) => lower.includes(t));
 
