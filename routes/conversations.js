@@ -1,7 +1,14 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
-const { listConversations, getConversation, saveMessage, updateConversationStatus } = require('../lib/db');
+const {
+  listConversations,
+  getConversation,
+  saveMessage,
+  updateConversationStatus,
+  markConversationViewed,
+  countUnreadConversations,
+} = require('../lib/db');
 
 // Simple shared-secret protection. This data can include customer emails and
 // full chat transcripts, so it should never be publicly readable. This is a
@@ -42,13 +49,28 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/conversations/unread-count
+// Must be registered before /:id below, or Express would treat
+// "unread-count" as a conversation ID instead of matching this route.
+router.get('/unread-count', async (req, res) => {
+  try {
+    const count = await countUnreadConversations();
+    res.json({ count });
+  } catch (err) {
+    console.error('Failed to count unread conversations:', err.message);
+    res.status(500).json({ error: 'Failed to count unread conversations.' });
+  }
+});
+
 // GET /api/conversations/:id
+// Viewing a conversation marks it as read.
 router.get('/:id', async (req, res) => {
   try {
     const conversation = await getConversation(req.params.id);
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found.' });
     }
+    await markConversationViewed(req.params.id);
     res.json({ conversation });
   } catch (err) {
     console.error('Failed to load conversation:', err.message);
