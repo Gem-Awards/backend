@@ -138,21 +138,24 @@ router.post('/', async (req, res) => {
   }
 
   // Shared escalation logic - used whether triggered by keywords on this
-  // message, or by finishing an "awaiting contact info" exchange from a
-  // prior turn.
-  async function escalate() {
+  // message, by finishing an "awaiting contact info" exchange, or by the
+  // shopping assistant handing off. An optional leadIn is prepended, so
+  // callers can keep their own explanation text rather than losing it to
+  // a generic message.
+  async function escalate(leadIn) {
+    const prefix = `${leadIn || 'That sounds like something our team should help with directly.'}\n\n`;
     const isAvailable = agentAvailable !== false;
 
     if (!knownEmail) {
       const prompt = knownName
-        ? "That sounds like something our team should help with directly. Could you share the best email to reach you at, so they can follow up with you?"
-        : "That sounds like something our team should help with directly. Could you share your name and the best email to reach you at, so they can follow up with you?";
-      return respondAndStore(prompt, true, 'awaiting_email');
+        ? 'Could you share the best email to reach you at, so they can follow up with you?'
+        : 'Could you share your name and the best email to reach you at, so they can follow up with you?';
+      return respondAndStore(prefix + prompt, true, 'awaiting_email');
     }
 
     if (isAvailable) {
       return respondAndStore(
-        "That sounds like something a team member should help with directly. I'm connecting you with a human agent.",
+        prefix + "I'm connecting you with a human agent now.",
         true,
         'escalated'
       );
@@ -170,7 +173,8 @@ router.post('/', async (req, res) => {
     }
 
     return respondAndStore(
-      `Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up at ${knownEmail} as soon as we're back.`,
+      prefix +
+        `Our team is currently outside business hours, but I've forwarded your message to our support team - they'll follow up at ${knownEmail} as soon as we're back.`,
       true,
       'escalated'
     );
@@ -237,6 +241,13 @@ router.post('/', async (req, res) => {
 
     try {
       const reply = await generateShoppingResponse({ products, messages: claudeMessages });
+
+      const NEEDS_HUMAN_MARKER = /\n?\s*NEEDS_HUMAN\s*$/i;
+      if (NEEDS_HUMAN_MARKER.test(reply)) {
+        const explanation = reply.replace(NEEDS_HUMAN_MARKER, '').trim();
+        return escalate(explanation);
+      }
+
       return respondAndStore(reply, false, 'ai_active');
     } catch (err) {
       console.error('Shopping assistant failed:', err.message);
