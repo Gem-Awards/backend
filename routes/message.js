@@ -4,10 +4,15 @@ const router = express.Router();
 const { searchKnowledgeBase } = require('../lib/knowledgeBase');
 const { findOrder } = require('../lib/woocommerce');
 const { generateResponse } = require('../lib/claude');
+const { searchProducts } = require('../lib/products');
+const { generateShoppingResponse } = require('../lib/shoppingAssistant');
 const {
   createConversation,
   saveMessage,
+  getConversation,
   getConversationStatus,
+  getConversationIntent,
+  setConversationIntent,
   getConversationContact,
   updateConversationContact,
 } = require('../lib/db');
@@ -28,6 +33,24 @@ const ESCALATION_TRIGGERS = [
 ];
 
 const EMAIL_REGEX = /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/;
+
+// Rough shopping-intent triggers to start with, same "replace with a real
+// classifier later" caveat as ESCALATION_TRIGGERS above.
+const SHOPPING_TRIGGERS = [
+  'looking for',
+  'gift for',
+  'gift idea',
+  'award for',
+  'need something for',
+  'present for',
+  'trophy for',
+  'plaque for',
+  'recommend',
+  'employee of the month',
+  'recognition',
+  'help me find',
+  'shopping for',
+];
 
 // Pulls an email and, heuristically, a name out of a reply to "what's your
 // name and email?" - not meant to scan arbitrary messages, only used right
@@ -153,6 +176,78 @@ router.post('/', async (req, res) => {
     );
   }
 
+  // Searches live product data and asks Claude to respond conversationally,
+  // with the full conversation so far as memory (unlike support, which
+  // answers each message independently).
+  async function handleShoppingAssistant() {
+    try {
+      await setConversationIntent(conversationId, 'shopping');
+    } catch (err) {
+      console.error('Failed to set shopping intent:', err.message);
+    }
+
+    let claudeMessages = [{ role: 'user', content: message }];
+    let searchQuery = message;
+
+    try {
+      const conv = await getConversation(conversationId);
+      if (conv && conv.messages && conv.messages.length) {
+        claudeMessages = conv.messages
+          .filter((m) => m.sender === 'customer' || m.sender === 'ai' || m.sender === 'agent')
+          .map((m) => ({
+            role: m.sender === 'customer' ? 'user' : 'assistant',
+            content: m.content,
+          }));
+
+        // Search using everything the customer has said so far, not just
+        // the latest reply - the product-type keyword ("award", "trophy")
+        // is often only mentioned once, early on, not repeated every turn.
+        const customerText = conv.messages
+          .filter((m) => m.sender === 'customer')
+          .map((m) => m.content)
+          .join(' ');
+        if (customerText) {
+          searchQuery = customerText;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load conversation history:', err.message);
+    }
+
+    let products = [];
+    try {
+      products = await searchProducts(searchQuery);
+      if (!products.length) {
+        // Fallback so a noisy/detail-heavy query doesn't come back totally
+        // empty - gives the AI something reasonable to work with.
+        products = await searchProducts('award trophy plaque');
+      }
+    } catch (err) {
+      console.error('Product search failed:', err.message);
+    }
+
+    if (!products.length) {
+      // No usable product data at all, for any reason (search error, or
+      // genuinely nothing matched). Don't let the AI improvise contact
+      // details or invent products - hand off to the real escalation flow,
+      // which knows your actual business hours and how to actually reach
+      // a human, instead of guessing.
+      return escalate();
+    }
+
+    try {
+      const reply = await generateShoppingResponse({ products, messages: claudeMessages });
+      return respondAndStore(reply, false, 'ai_active');
+    } catch (err) {
+      console.error('Shopping assistant failed:', err.message);
+      return respondAndStore(
+        "Sorry, I'm having trouble pulling up product suggestions right now. Let me connect you with a human agent.",
+        true,
+        'escalated'
+      );
+    }
+  }
+
   // If the previous turn asked this customer for their name/email, this
   // message is their reply to that - parse what we can out of it and
   // finish escalating, rather than treating it as an unrelated question.
@@ -193,6 +288,20 @@ router.post('/', async (req, res) => {
 
   if (shouldEscalate) {
     return escalate();
+  }
+
+  let intent = null;
+  try {
+    intent = await getConversationIntent(conversationId);
+  } catch (err) {
+    console.error('Failed to load conversation intent:', err.message);
+  }
+
+  const isShoppingIntent =
+    intent === 'shopping' || SHOPPING_TRIGGERS.some((t) => lower.includes(t));
+
+  if (isShoppingIntent) {
+    return handleShoppingAssistant();
   }
 
   try {
