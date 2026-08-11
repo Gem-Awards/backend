@@ -121,7 +121,7 @@ router.post('/', async (req, res) => {
     console.error('Failed to save customer message:', err.message);
   }
 
-  async function respondAndStore(replyText, escalate, conversationStatus) {
+  async function respondAndStore(replyText, escalate, conversationStatus, extra) {
     try {
       await saveMessage({
         id: crypto.randomUUID(),
@@ -134,7 +134,7 @@ router.post('/', async (req, res) => {
     } catch (err) {
       console.error('Failed to save AI reply:', err.message);
     }
-    res.json({ reply: replyText, escalate, conversationId });
+    res.json({ reply: replyText, escalate, conversationId, ...(extra || {}) });
   }
 
   // Shared escalation logic - used whether triggered by keywords on this
@@ -248,7 +248,35 @@ router.post('/', async (req, res) => {
         return escalate(explanation);
       }
 
-      return respondAndStore(reply, false, 'ai_active');
+      // Pull out exactly which products the AI says it recommended, rather
+      // than guessing from its prose - keeps the visual cards grounded in
+      // what it actually said, not a separate parse of free text.
+      const RECOMMENDED_IDS_MARKER = /\n?\s*RECOMMENDED_IDS:\s*(.*)\s*$/im;
+      let cleanReply = reply;
+      let recommendedProducts = [];
+
+      const idsMatch = reply.match(RECOMMENDED_IDS_MARKER);
+      if (idsMatch) {
+        cleanReply = reply.replace(RECOMMENDED_IDS_MARKER, '').trim();
+        const idsRaw = idsMatch[1].trim();
+        if (idsRaw && idsRaw.toLowerCase() !== 'none') {
+          const ids = idsRaw
+            .split(',')
+            .map((s) => parseInt(s.trim(), 10))
+            .filter((n) => !Number.isNaN(n));
+          recommendedProducts = products
+            .filter((p) => ids.includes(p.id))
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              price: p.price,
+              permalink: p.permalink,
+              image: p.image,
+            }));
+        }
+      }
+
+      return respondAndStore(cleanReply, false, 'ai_active', { products: recommendedProducts });
     } catch (err) {
       console.error('Shopping assistant failed:', err.message);
       return respondAndStore(
