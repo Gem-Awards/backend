@@ -276,6 +276,30 @@ router.post('/', async (req, res) => {
         }
       }
 
+      // Safety net: if the AI leaks "[ID: n]" into the visible text (instead
+      // of, or in addition to, the trailing marker), strip it so the
+      // customer never sees it, and use it as a fallback source of IDs if
+      // the trailing marker was missing entirely.
+      const INLINE_ID_MARKER = /\[ID:\s*(\d+)\]/gi;
+      const inlineIds = [];
+      let inlineMatch;
+      while ((inlineMatch = INLINE_ID_MARKER.exec(cleanReply)) !== null) {
+        inlineIds.push(parseInt(inlineMatch[1], 10));
+      }
+      cleanReply = cleanReply.replace(/\s*\[ID:\s*\d+\]/gi, '').trim();
+
+      if (!recommendedProducts.length && inlineIds.length) {
+        recommendedProducts = products
+          .filter((p) => inlineIds.includes(p.id))
+          .map((p) => ({
+            id: p.id,
+            name: p.name,
+            price: p.price,
+            permalink: p.permalink,
+            image: p.image,
+          }));
+      }
+
       return respondAndStore(cleanReply, false, 'ai_active', { products: recommendedProducts });
     } catch (err) {
       console.error('Shopping assistant failed:', err.message);
