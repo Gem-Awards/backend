@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getUnreadCount, getUnreadMessages } = require('../lib/emailInbox');
+const { getUnreadCount, getUnreadMessages, getInboxFolderRaw } = require('../lib/emailInbox');
 
 function requireAdminKey(req, res, next) {
   const configuredKey = process.env.ADMIN_API_KEY;
@@ -55,6 +55,22 @@ router.get('/preview', async (req, res) => {
     console.error('Email preview failed:', err.response?.data || err.message);
     res.status(500).json({
       error: 'Preview failed.',
+      details: err.response?.data || err.message,
+    });
+  }
+});
+
+// GET /api/email/test-connection-raw
+// Same idea as test-connection, but with zero OData query parameters -
+// isolates whether $select specifically is what's being blocked.
+router.get('/test-connection-raw', async (req, res) => {
+  try {
+    const folder = await getInboxFolderRaw();
+    res.json({ success: true, folder });
+  } catch (err) {
+    console.error('Raw email connection test failed:', err.response?.data || err.message);
+    res.status(500).json({
+      error: 'Connection failed.',
       details: err.response?.data || err.message,
     });
   }
