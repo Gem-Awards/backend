@@ -9,6 +9,8 @@ const {
   markConversationViewed,
   countUnreadConversations,
   bulkCloseConversations,
+  setConversationPinned,
+  deleteConversations,
 } = require('../lib/db');
 
 // Simple shared-secret protection. This data can include customer emails and
@@ -138,6 +140,52 @@ router.post('/bulk-close', async (req, res) => {
   } catch (err) {
     console.error('Failed to bulk-close conversations:', err.message);
     res.status(500).json({ error: 'Failed to bulk-close conversations.' });
+  }
+});
+
+// PATCH /api/conversations/:id/pin
+// body: { pinned: true/false }
+router.patch('/:id/pin', async (req, res) => {
+  const { pinned } = req.body;
+
+  try {
+    await setConversationPinned(req.params.id, pinned);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to update pinned state:', err.message);
+    res.status(500).json({ error: 'Failed to update pinned state.' });
+  }
+});
+
+// DELETE /api/conversations/:id
+router.delete('/:id', async (req, res) => {
+  try {
+    const count = await deleteConversations([req.params.id]);
+    if (!count) {
+      return res.status(404).json({ error: 'Conversation not found.' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete conversation:', err.message);
+    res.status(500).json({ error: 'Failed to delete conversation.' });
+  }
+});
+
+// POST /api/conversations/bulk-delete
+// body: { ids: [...] }
+router.post('/bulk-delete', async (req, res) => {
+  const { ids } = req.body;
+
+  if (!Array.isArray(ids) || !ids.length) {
+    return res.status(400).json({ error: 'ids must be a non-empty array.' });
+  }
+
+  try {
+    const count = await deleteConversations(ids);
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('Failed to bulk-delete conversations:', err.message);
+    res.status(500).json({ error: 'Failed to bulk-delete conversations.' });
   }
 });
 
