@@ -7,8 +7,10 @@ const ordersRoute = require('./routes/orders');
 const conversationsRoute = require('./routes/conversations');
 const chatRoute = require('./routes/chat');
 const emailRoute = require('./routes/email');
-const { initDb, deleteOldClosedConversations } = require('./lib/db');
+const settingsRoute = require('./routes/settings');
+const { initDb, deleteOldClosedConversations, getSetting } = require('./lib/db');
 const { processUnreadEmails } = require('./lib/emailProcessor');
+const { isBusinessHoursNow } = require('./lib/wpAvailability');
 
 const app = express();
 
@@ -24,6 +26,7 @@ app.use('/api/orders', ordersRoute);
 app.use('/api/conversations', conversationsRoute);
 app.use('/api/chat', chatRoute);
 app.use('/api/email', emailRoute);
+app.use('/api/settings', settingsRoute);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -49,7 +52,23 @@ async function runEmailCheck() {
   if (!process.env.MS_TENANT_ID) {
     return; // Email channel not configured - skip silently.
   }
+
   try {
+    const mode = await getSetting('email_mode', 'always');
+
+    if (mode === 'off') {
+      return; // AI email responder fully disabled.
+    }
+
+    if (mode === 'after_hours') {
+      const businessHoursNow = await isBusinessHoursNow();
+      // If we genuinely can't tell (WordPress unreachable), default to
+      // NOT responding - safer to leave mail for a human than guess wrong.
+      if (businessHoursNow === null || businessHoursNow === true) {
+        return;
+      }
+    }
+
     await processUnreadEmails();
   } catch (err) {
     console.error('Email check failed:', err.message);
