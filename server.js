@@ -55,20 +55,26 @@ async function runEmailCheck() {
 
   try {
     const mode = await getSetting('email_mode', 'always');
+    console.log(`Email check: mode = "${mode}"`);
 
     if (mode === 'off') {
-      return; // AI email responder fully disabled.
+      console.log('Email check: mode is off, skipping.');
+      return;
     }
 
     if (mode === 'after_hours') {
       const businessHoursNow = await isBusinessHoursNow();
+      console.log(`Email check: businessHoursNow = ${businessHoursNow}`);
+
       // If we genuinely can't tell (WordPress unreachable), default to
       // NOT responding - safer to leave mail for a human than guess wrong.
       if (businessHoursNow === null || businessHoursNow === true) {
+        console.log('Email check: within business hours (or unknown), skipping.');
         return;
       }
     }
 
+    console.log('Email check: proceeding to process unread emails.');
     await processUnreadEmails();
   } catch (err) {
     console.error('Email check failed:', err.message);
