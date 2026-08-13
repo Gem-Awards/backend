@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const { searchKnowledgeBase } = require('../lib/knowledgeBase');
 const { findOrder } = require('../lib/woocommerce');
@@ -17,6 +18,25 @@ const {
   updateConversationContact,
 } = require('../lib/db');
 const { sendEscalationEmail } = require('../lib/email');
+
+// Protects against a bot (or anyone finding this URL directly) hammering
+// the AI with requests - each one costs real money via the Anthropic API.
+// 20 messages per 10 minutes is generous for a real conversation, but
+// blocks any kind of automated flood.
+const chatRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    reply: "You're sending messages a bit quickly - please wait a few minutes and try again.",
+    escalate: false,
+  },
+});
+
+const MAX_MESSAGE_LENGTH = 2000;
+
+router.use(chatRateLimiter);
 
 // Rough escalation triggers to start with. Replace with a real
 // intent/sentiment classifier once you have real conversation logs to tune
@@ -76,6 +96,12 @@ router.post('/', async (req, res) => {
 
   if (!message) {
     return res.status(400).json({ error: 'message is required' });
+  }
+
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({
+      error: `message is too long (max ${MAX_MESSAGE_LENGTH} characters)`,
+    });
   }
 
   const conversationId = incomingId || crypto.randomUUID();
