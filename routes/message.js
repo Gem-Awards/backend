@@ -23,8 +23,6 @@ const { sendEscalationEmail } = require('../lib/email');
 // against (see "Escalation Rules" in the spec doc).
 const ESCALATION_TRIGGERS = [
   'refund',
-  'damaged',
-  'broken',
   'angry',
   'human',
   'agent',
