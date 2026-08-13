@@ -379,6 +379,15 @@ router.post('/', async (req, res) => {
       orderContext,
     });
 
+    const FOLLOWUP_MARKER = /\n?\s*NEEDS_HUMAN_FOLLOWUP\s*$/i;
+    if (FOLLOWUP_MARKER.test(reply)) {
+      const cleanReply = reply.replace(FOLLOWUP_MARKER, '').trim();
+      // Still send the AI's answer - it may be genuinely useful - but flag
+      // the conversation as needing a human to follow up, same status used
+      // elsewhere for anything that needs attention in Live Chats.
+      return respondAndStore(cleanReply, true, 'escalated');
+    }
+
     return respondAndStore(reply, false);
   } catch (err) {
     console.error('AI reasoning failed:', err.message);
